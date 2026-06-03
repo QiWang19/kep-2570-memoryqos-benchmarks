@@ -1,0 +1,65 @@
+Rollback Safety Test - v2
+Date: 2026-06-03
+Kubelet: v1.37.0-alpha.0.1256+dc7be641101f4a-dirty (includes rollback PRs #138903, #139377)
+Runtime: CRI-O 1.34.3
+Kernel: 7.0.9-205.fc44.x86_64
+Test pod: Burstable (requests=128Mi, limits=256Mi), sleep 3600
+
+Rollback procedure: Set MemoryQoS: false, remove memoryReservationPolicy, restart kubelet.
+
+=== BEFORE ROLLBACK (MemoryQoS=true, TieredReservation) ===
+
+--- Container level ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB)
+  memory.high: 255012864 (243 MiB)
+  memory.max:  268435456 (256 MiB)
+
+--- Pod level ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB)
+
+--- Burstable QoS class ---
+  memory.min:  0
+  memory.low:  207618048 (198 MiB)
+
+--- kubepods root ---
+  memory.min:  207618048 (198 MiB)
+  memory.low:  0
+
+=== AFTER ROLLBACK (MemoryQoS=false, memoryReservationPolicy removed) ===
+
+--- Container level ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB) ** STALE - persists **
+  memory.high: 255012864 (243 MiB) ** STALE - persists **
+  memory.max:  268435456 (256 MiB)
+
+--- Pod level ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB) ** STALE - persists **
+
+--- Burstable QoS class ---
+  memory.min:  0
+  memory.low:  0  ** CLEARED at kubelet startup **
+
+--- kubepods root ---
+  memory.min:  0  ** CLEARED at kubelet startup **
+  memory.low:  0
+
+=== SUMMARY ===
+
+| Level                    | Knob         | Before    | After     | Status                                           |
+|--------------------------|-------------|-----------|-----------|--------------------------------------------------|
+| kubepods root            | memory.min  | 198 MiB   | 0         | Cleared at kubelet startup (PR #138903)           |
+| burstable QoS class      | memory.low  | 198 MiB   | 0         | Cleared at kubelet startup (PR #138903)           |
+| pod level                | memory.low  | 128 MiB   | 128 MiB   | Stale - persists but neutralized (parent=0 wins)  |
+| container level          | memory.low  | 128 MiB   | 128 MiB   | Stale - persists but neutralized (parent=0 wins)  |
+| container level          | memory.high | 243 MiB   | 243 MiB   | Stale - persists until container restart or resize |
+
+Notes:
+- QoS class level cleanup works correctly: memory.min and memory.low are cleared to 0 at kubelet startup.
+- Pod-level and container-level memory.low values persist but are effectively neutralized because
+  cgroup v2 memory protection is hierarchical (parent=0 wins).
+- Container-level memory.high persists because it is set via CRI Unified map at container creation.
+  It will be cleared to "max" on container restart or InPlacePodResize update.

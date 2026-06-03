@@ -1,0 +1,37 @@
+Tiered Memory Protection - v2 (v1.37.0-alpha.0.1256+dc7be641101f4a-dirty, kernel 7.0.9-205.fc44.x86_64, CRI-O 1.34.3)
+Date: 2026-06-02
+Kubelet config: MemoryQoS=true, memoryReservationPolicy=TieredReservation, memoryThrottlingFactor=0.9 (default)
+Node allocatable memory: 32388480Ki (30.9 GiB)
+
+=== Guaranteed Pod (req=lim=256Mi, cpu req=lim=100m) ===
+  memory.min: 268435456 (256 MiB)
+  memory.low: 0
+  memory.high: max
+  memory.max: 268435456 (256 MiB)
+
+=== BestEffort Pod (no resources) ===
+  memory.min: 0
+  memory.low: 0
+  memory.high: 29943595008 (28556 MiB = 0.9 * ~31729 MiB allocatable)
+  memory.max: max
+
+=== Multi-Container Burstable Pod ===
+  Container A (req=128Mi, lim=256Mi):
+    memory.min: 0
+    memory.low: 134217728 (128 MiB)
+    memory.high: 255012864 (243 MiB)
+  Container B (req=64Mi, lim=128Mi):
+    memory.min: 0
+    memory.low: 67108864 (64 MiB)
+    memory.high: 127504384 (121 MiB)
+  Pod level:
+    memory.min: 0
+    memory.low: 201326592 (192 MiB)
+
+=== Cgroup Hierarchy ===
+  kubepods.slice:
+    memory.min: 543162368 (518 MiB)
+    memory.low: 0
+  kubepods-burstable.slice:
+    memory.min: 0
+    memory.low: 274726912 (262 MiB)
