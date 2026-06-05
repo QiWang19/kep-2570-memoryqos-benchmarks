@@ -1,0 +1,112 @@
+InPlacePodResize + MemoryQoS Rollback Test
+Date: 2026-06-05
+Kubelet: v1.37.0-alpha.0.1256+dc7be641101f4a-dirty (includes PRs #138903, #139377)
+Runtime: CRI-O 1.37.0 (includes PR cri-o/cri-o#9820: unified cgroup update support)
+Kernel: 7.0.9-205.fc44.x86_64
+Test pod: Burstable (requests=128Mi/50m, limits=256Mi/100m), pause container, resizePolicy=NotRequired
+
+Procedure:
+  1. Start kubelet with MemoryQoS=true, TieredReservation, InPlacePodVerticalScaling=true (default)
+  2. Create Burstable pod, verify cgroup values
+  3. Disable MemoryQoS (set false, remove memoryReservationPolicy), restart kubelet
+  4. Verify stale container-level values persist
+  5. Trigger in-place resize: 128Mi/256Mi -> 192Mi/384Mi via resize subresource
+  6. Check whether resize clears stale memory.high
+
+=== BEFORE ROLLBACK (MemoryQoS=true, TieredReservation) ===
+
+--- Container ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB)
+  memory.high: 255012864 (243 MiB)
+  memory.max:  268435456 (256 MiB)
+
+--- Pod ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB)
+  memory.high: max
+  memory.max:  268435456 (256 MiB)
+
+--- QoS-class (burstable) ---
+  memory.min:  0
+  memory.low:  207618048 (198 MiB)
+  memory.high: max
+  memory.max:  max
+
+--- Kubepods root ---
+  memory.min:  207618048 (198 MiB)
+  memory.low:  0
+  memory.high: max
+  memory.max:  33270661120 (31729 MiB)
+
+=== AFTER ROLLBACK, BEFORE RESIZE (MemoryQoS=false) ===
+
+--- Container ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB) ** STALE **
+  memory.high: 255012864 (243 MiB) ** STALE **
+  memory.max:  268435456 (256 MiB)
+
+--- Pod ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB) ** STALE but neutralized (parent=0) **
+  memory.high: max
+  memory.max:  268435456 (256 MiB)
+
+--- QoS-class (burstable) ---
+  memory.min:  0
+  memory.low:  0  ** CLEARED at kubelet startup **
+  memory.high: max
+  memory.max:  max
+
+--- Kubepods root ---
+  memory.min:  0  ** CLEARED at kubelet startup **
+  memory.low:  0
+  memory.high: max
+  memory.max:  33270661120 (31729 MiB)
+
+=== AFTER IN-PLACE RESIZE (128Mi/256Mi -> 192Mi/384Mi, MemoryQoS=false) ===
+
+--- Container ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB) ** STALE but neutralized (parent=0) **
+  memory.high: max  ** CLEARED by resize **
+  memory.max:  402653184 (384 MiB) ** UPDATED **
+
+--- Pod ---
+  memory.min:  0
+  memory.low:  134217728 (128 MiB) ** STALE but neutralized (parent=0) **
+  memory.high: max
+  memory.max:  402653184 (384 MiB) ** UPDATED **
+
+--- QoS-class (burstable) ---
+  memory.min:  0
+  memory.low:  0
+  memory.high: max
+  memory.max:  max
+
+--- Kubepods root ---
+  memory.min:  0
+  memory.low:  0
+  memory.high: max
+  memory.max:  33270661120 (31729 MiB)
+
+=== SUMMARY ===
+
+| Level     | Knob         | Before Rollback | After Rollback | After Resize | Status                                    |
+|-----------|-------------|-----------------|----------------|--------------|-------------------------------------------|
+| kubepods  | memory.min  | 198 MiB         | 0              | 0            | Cleared at kubelet startup (PR #138903)   |
+| QoS-class | memory.low  | 198 MiB         | 0              | 0            | Cleared at kubelet startup (PR #138903)   |
+| pod       | memory.low  | 128 MiB         | 128 MiB        | 128 MiB      | Stale, neutralized (parent=0)             |
+| pod       | memory.max  | 256 MiB         | 256 MiB        | 384 MiB      | Updated by resize                         |
+| container | memory.low  | 128 MiB         | 128 MiB        | 128 MiB      | Stale, neutralized (parent=0)             |
+| container | memory.high | 243 MiB         | 243 MiB        | max          | CLEARED by resize (PR #139377 + cri-o#9820) |
+| container | memory.max  | 256 MiB         | 256 MiB        | 384 MiB      | Updated by resize                         |
+
+FINDING: InPlacePodResize successfully clears stale memory.high after MemoryQoS rollback.
+The kubelet (PR #139377) sets memory.high=max in the Unified map when MemoryQoS is disabled,
+and CRI-O (PR cri-o/cri-o#9820) passes the Unified map through UpdateContainerResources.
+Both fixes are required — without the CRI-O fix, the Unified map is silently dropped.
+
+Container-level memory.low remains stale at 128 MiB but is effectively neutralized because
+the parent QoS-class cgroup memory.low=0, and cgroup v2 memory protection is hierarchical.

@@ -1,0 +1,68 @@
+Multi-Pod Memory Protection Under Pressure — Run A (TieredReservation ON)
+=========================================================================
+
+Date: 2026-06-07
+Kubelet config: MemoryQoS=true, memoryReservationPolicy=TieredReservation
+
+Test Pods:
+  guaranteed-holder  Guaranteed  req=lim=256Mi   allocates 100Mi
+  burstable-holder   Burstable   req=128Mi lim=512Mi  allocates 100Mi
+  besteffort-holder  BestEffort  no resources    allocates 200Mi
+  aggressor          Burstable   req=128Mi lim=14Gi   allocates 50Mi/0.5s
+
+Node total RAM: 31.7 GiB
+Node allocatable: 30.9 GiB
+Node available at test start: ~13 GiB
+
+Aggressor memory.high: floor[(128Mi + 0.9*(14Gi - 128Mi)) / 4096] * 4096
+                      = ~12915 Mi (~12.6 GiB)
+
+Results:
+  Aggressor started:   03:12:18Z
+  Monitor started:     22:12:19 local (03:12:19Z)
+  Monitor ended:       22:22:15 local (10min timeout, aggressor still running)
+
+  Aggressor memory.high: 12915 Mi (~12.6 GiB)
+  Time to reach memory.high: ~2m21s (22:12:19 → 22:14:40)
+  Peak aggressor memory: ~13362 Mi (~13.0 GiB)
+  Aggressor memory.events high (at 10min): 293,678
+  Aggressor memory.events oom_kill: 0
+  Aggressor outcome: throttled at memory.high, still running at 10min
+
+  Kill order: none — all pods survived
+
+Holder pod status (stable throughout):
+  guaranteed-holder:  106 Mi, high=0, oom_kill=0
+  burstable-holder:   104-108 Mi, high=0, oom_kill=0
+  besteffort-holder:  204-205 Mi, high=0, oom_kill=0
+
+Timeline (aggressor memory in Mi, high events):
+  22:12:19  104Mi    high=0       (start)
+  22:12:44  2414Mi   high=0
+  22:13:16  5326Mi   high=0
+  22:13:50  8490Mi   high=0
+  22:14:22  11404Mi  high=0
+  22:14:38  12860Mi  high=0       (last sample before throttling)
+  22:14:40  13084Mi  high=3058    (throttling begins)
+  22:14:47  13095Mi  high=16202
+  22:15:12  13188Mi  high=52590
+  22:16:00  13161Mi  high=92524
+  22:17:00  13228Mi  high=139908
+  22:18:00  13260Mi  high=178418
+  22:19:00  13261Mi  high=210082
+  22:20:00  13271Mi  high=236808
+  22:21:00  13301Mi  high=264296
+  22:22:00  13260Mi  high=289130
+  22:22:15  13311Mi  high=293678  (monitor timeout, aggressor still running)
+
+Analysis:
+  The aggressor ramped linearly from 104Mi to ~12860Mi in ~2m21s with high=0.
+  Once it crossed memory.high (~12.6 GiB), the kernel began throttling: memory
+  plateaued at ~13.1-13.3 GiB while the high event counter climbed rapidly
+  (3058 → 293678 over ~8 minutes). The aggressor was still running when the
+  monitor timed out — memory.high throttling effectively capped it without
+  OOM-killing.
+
+  All three holder pods remained stable with no high events or OOM kills.
+
+CSV data: multi-pod-pressure-runA-14g.csv
