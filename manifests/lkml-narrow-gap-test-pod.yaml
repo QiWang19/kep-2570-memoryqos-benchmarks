@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lkml-livelock-test
+  namespace: default
+spec:
+  containers:
+  - name: badmem
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import time
+      x = []
+      i = 0
+      while True:
+          i += 1
+          print(f'Still processing {i}', flush=True)
+          x.append('x' * 1048576)
+          time.sleep(3)
+    resources:
+      requests:
+        memory: "10Mi"
+      limits:
+        memory: "20Mi"
+  restartPolicy: Never

@@ -138,7 +138,7 @@ Aggressor: Burstable, requests=128Mi, limits=14Gi, allocating 50Mi/0.5s (~100Mi/
 | Aggressor memory.events high (at 10min) | 293,678 |
 | Aggressor outcome | Throttled at memory.high, still running at 10min |
 | Node total RAM | 31.7 GiB |
-| Node available memory at test start | ~13 GiB |
+| Node available memory at test start | ~13 GiB(`MemAvailable` from `/proc/meminfo`) |
 | Kill order | none — all pods survived |
 
 The aggressor ramped linearly from 104Mi to ~12,860Mi in ~2m21s with `high=0`. Once it crossed `memory.high` (~12.6 GiB), the kernel began throttling: memory plateaued at ~13.1-13.3 GiB while the `high` event counter climbed rapidly (3,058 → 293,678 over ~8 minutes). The aggressor was still running when the monitor timed out at 10 minutes — `memory.high` throttling effectively capped it without OOM-killing.
@@ -152,6 +152,102 @@ All three holder pods remained stable throughout (guaranteed: 106Mi, burstable: 
 Raw data: [`data/multi-pod-pressure-runA-14g.csv`](data/multi-pod-pressure-runA-14g.csv), [`data/multi-pod-pressure-runA.txt`](data/multi-pod-pressure-runA.txt)
 
 Monitor script: [`scripts/monitor-pressure-test.sh`](scripts/monitor-pressure-test.sh). Plot script: [`scripts/plot-pressure-test.py`](scripts/plot-pressure-test.py)
+
+### Run B: aggressor with 8 GiB limit
+
+Aggressor: Burstable, requests=128Mi, limits=8Gi, allocating 50Mi/0.5s (~100Mi/s). Pod spec: [`manifests/pressure-test-aggressor-8g.yaml`](manifests/pressure-test-aggressor-8g.yaml).
+
+| Metric | Value |
+|--------|-------|
+| Aggressor memory.high | 7,388 Mi (~7.2 GiB) |
+| Time to reach memory.high | ~68s |
+| Peak aggressor memory | ~7,828 Mi (~7.6 GiB) |
+| Aggressor memory.events high (at 10min) | 156,161 |
+| Aggressor outcome | Throttled at memory.high, still running at 10min |
+| Node total RAM | 31.7 GiB |
+| Node available memory at test start | ~16 GiB |
+| Kill order | none — all pods survived |
+
+Same behavior as Run A: the aggressor ramped linearly until hitting `memory.high` (~7.4 GiB) at ~68s, then plateaued at ~7.8 GiB while `high` events climbed to 156,161 over ~9 minutes. Despite ~8.2 GiB of node headroom above `memory.high`, the kernel's per-cgroup reclaim prevented the process from reaching `memory.max` (see [section 6 analysis](#6-single-pod-memoryhigh-throttle-sustained-behavior)).
+
+All three holder pods remained stable throughout (guaranteed: 110Mi, burstable: 104Mi, besteffort: 205Mi, all `high=0`, `oom_kill=0`).
+
+![Run B all pods memory](plots/pressure-runb-memory-all-pods.png)
+
+![Run B aggressor throttling](plots/pressure-runb-aggressor-throttle.png)
+
+Raw data: [`data/multi-pod-8g-test.csv`](data/multi-pod-8g-test.csv)
+
+---
+
+## 6. Single-Pod memory.high Throttle Sustained Behavior
+
+Tests to characterize how `memory.high` throttling behaves for a single aggressor pod with sustained memory allocation, with no other pods competing for memory.
+
+Kubelet config: `MemoryQoS=true`, `memoryReservationPolicy=TieredReservation`. Node allocatable: 30.9 GiB. Node available at test start: ~16 GiB.
+
+Aggressor workload: allocating 50Mi every 0.5s via mmap + page fault (same as section 5).
+
+### Narrow-gap pod (requests=10Mi, limits=20Mi, gap=1Mi)
+
+Pod spec: [`manifests/lkml-narrow-gap-test-pod.yaml`](manifests/lkml-narrow-gap-test-pod.yaml). Allocating 1Mi every 3s. This pod has only a 1 Mi gap between `memory.high` (19 Mi) and `memory.max` (20 Mi).
+
+| Metric | Value |
+|--------|-------|
+| memory.high | 19 Mi |
+| memory.max | 20 Mi |
+| Gap (memory.max - memory.high) | 1 Mi |
+| Outcome | **OOM-killed after ~44s** |
+
+With only a 1 Mi gap, the process overshoots `memory.high` and reaches `memory.max` before the kernel can reclaim — normal OOM-kill behavior.
+
+Reference: [LKML discussion on memory.high behavior](https://lkml.org/lkml/2023/6/1/1300)
+
+### Wide-gap pod, 8 GiB limit (gap=804Mi)
+
+Pod spec: [`manifests/pressure-test-aggressor-8g.yaml`](manifests/pressure-test-aggressor-8g.yaml).
+
+| Metric | Value |
+|--------|-------|
+| memory.high | 7,388 Mi (~7.2 GiB) |
+| memory.max | 8,192 Mi (8 GiB) |
+| Gap (memory.max - memory.high) | 804 Mi |
+| Time to reach memory.high | ~1m15s |
+| Peak memory | ~7,487 Mi (~7.3 GiB) |
+| memory.events high (at 10min) | 770,790 |
+| Node headroom above memory.high | ~8.6 GiB |
+| Outcome | **Throttled indefinitely — still running at 10min, never OOM-killed** |
+
+### Wide-gap pod, 14 GiB limit (gap=1,421Mi)
+
+Pod spec: [`manifests/pressure-test-aggressor.yaml`](manifests/pressure-test-aggressor.yaml).
+
+| Metric | Value |
+|--------|-------|
+| memory.high | 12,915 Mi (~12.6 GiB) |
+| memory.max | 14,336 Mi (14 GiB) |
+| Gap (memory.max - memory.high) | 1,421 Mi |
+| Time to reach memory.high | ~2m10s |
+| Peak memory | ~13,159 Mi (~12.9 GiB) |
+| memory.events high (at 10min) | 628,635 |
+| Node headroom above memory.high | ~3.4 GiB |
+| Outcome | **Throttled indefinitely — still running at 10min, never OOM-killed** |
+
+### Analysis
+
+The gap between `memory.high` and `memory.max` (`0.1 * (limits - requests)` at the default factor) determines the outcome. A 1 Mi gap is too small for reclaim to keep up — the process reaches `memory.max` and is OOM-killed normally. At 804 Mi and above, per-cgroup reclaim keeps pace with allocation and the process never reaches `memory.max`. This is not dependent on system-wide memory pressure — the 8 GiB pod had 8.6 GiB of free node memory.
+
+| Test | Gap | Node headroom | Outcome |
+|------|-----|---------------|---------|
+| Narrow-gap (20 Mi limit) | 1 Mi | ~16 GiB | OOM-killed (44s) |
+| Wide-gap (8 GiB limit) | 804 Mi | ~8.6 GiB | Throttled indefinitely |
+| Wide-gap (14 GiB limit) | 1,421 Mi | ~3.4 GiB | Throttled indefinitely |
+
+![Single-pod throttle comparison](plots/single-pod-throttle-comparison.png)
+
+Raw data: [`data/livelock-8g-test.csv`](data/livelock-8g-test.csv), [`data/livelock-14g-single-test.csv`](data/livelock-14g-single-test.csv)
+
+Plot script: [`scripts/plot-throttle-tests.py`](scripts/plot-throttle-tests.py)
 
 ---
 
@@ -167,7 +263,8 @@ Monitor script: [`scripts/monitor-pressure-test.sh`](scripts/monitor-pressure-te
 | Rollback: QoS class | Cleared via reconcile loop | Cleared at kubelet startup | **Improved** — cleanup via startup dbus calls |
 | Rollback: container memory.high | Not tested | Stale, cleared on restart/resize | **New** — confirmed stale value behavior |
 | Rollback: InPlacePodResize | Not tested | Clears stale memory.high to max | **New** — non-disruptive remediation confirmed |
-| Multi-pod pressure (Run A) | Not tested | Aggressor throttled at memory.high, all pods survived | **New** — validates memory.high throttling under pressure |
+| Multi-pod pressure (Run A, 14G) | Not tested | Aggressor throttled at memory.high, all pods survived | **New** — validates memory.high throttling under pressure |
+| Multi-pod pressure (Run B, 8G) | Not tested | Aggressor throttled at memory.high, all pods survived | **New** — confirms throttle behavior with smaller limit and abundant node headroom |
 
 ---
 
