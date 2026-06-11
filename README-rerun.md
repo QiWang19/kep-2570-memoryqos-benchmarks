@@ -251,6 +251,72 @@ Plot script: [`scripts/plot-throttle-tests.py`](scripts/plot-throttle-tests.py)
 
 ---
 
+## 7. Guaranteed Pod Page Cache Behavior ([#137880](https://github.com/kubernetes/kubernetes/issues/137880))
+
+**Pod spec**: [`manifests/guaranteed-pageio-test-pod.yaml`](manifests/guaranteed-pageio-test-pod.yaml) — Guaranteed pod (512Mi/512Mi).
+
+**Workload**: Allocate 300Mi anonymous memory, then repeatedly write+read 500Mi of page cache (10 x 50Mi files) per iteration. Each iteration requires the kernel to reclaim ~288Mi of page cache to stay within the 512Mi limit.
+
+### Run 1: TieredReservation (memory.min = 512Mi)
+
+Kubelet config: `MemoryQoS: true`, `memoryReservationPolicy: TieredReservation`.
+
+| Metric | Value |
+|--------|-------|
+| memory.min | 536870912 (512 MiB) |
+| memory.max | 536870912 (512 MiB) |
+| memory.high | max |
+| Iterations completed | 0 (OOM-killed during first iteration) |
+| Outcome | **OOM-killed** (reproduced twice) |
+
+With `memory.min = memory.max`, the kernel cannot reclaim page cache within the cgroup. After writing ~4 files (~200Mi page cache), anonymous (300Mi) + page cache exceeds `memory.max` and the container is OOM-killed.
+
+### Run 2: memoryReservationPolicy: None (memory.min = 0)
+
+Kubelet config: `MemoryQoS: true`, `memoryReservationPolicy: None`.
+
+| Metric | Value |
+|--------|-------|
+| memory.min | 0 |
+| memory.max | 536870912 (512 MiB) |
+| memory.high | max |
+| memory.current | 461-511 MiB (oscillating) |
+| Iterations completed | 19+ |
+| oom_kill | 0 |
+| Outcome | **Survived** |
+
+With `memory.min=0`, page cache is freely reclaimable regardless of whether MemoryQoS is enabled.
+
+### Run 3: MemoryQoS disabled (memory.min = 0)
+
+Kubelet config: `MemoryQoS: false`. Pod: [`manifests/guaranteed-pageio-no-memqos-pod.yaml`](manifests/guaranteed-pageio-no-memqos-pod.yaml).
+
+| Metric | Value |
+|--------|-------|
+| memory.min | 0 |
+| memory.max | 536870912 (512 MiB) |
+| memory.high | max |
+| memory.current | 461-511 MiB (oscillating) |
+| Iterations completed | 81+ |
+| oom_kill | 0 |
+| Outcome | **Survived** |
+
+Same behavior as Run 2. The kernel freely reclaims page cache within the cgroup as it approaches `memory.max`.
+
+### Summary
+
+| Run | MemoryQoS | Policy | memory.min | Outcome |
+|-----|-----------|--------|-----------|---------|
+| Run 1 | true | TieredReservation | 512 MiB | **OOM-killed** |
+| Run 2 | true | None | 0 | **Survived** |
+| Run 3 | false | — | 0 | **Survived** |
+
+`memory.min = memory.max` (TieredReservation on Guaranteed pods) blocks intra-cgroup page cache reclaim, confirming [#137880](https://github.com/kubernetes/kubernetes/issues/137880). This only affects `memoryReservationPolicy: TieredReservation`, not the default (`None`). Workloads with heavy file I/O (databases, image repos) on Guaranteed pods should use `memoryReservationPolicy: None` or set requests < limits (Burstable) to avoid this.
+
+Raw data: [`data/guaranteed-pageio-run3-no-memqos.txt`](data/guaranteed-pageio-run3-no-memqos.txt)
+
+---
+
 ## Changes from Alpha Run
 
 | Test | alpha | beta | Impact |
@@ -265,6 +331,7 @@ Plot script: [`scripts/plot-throttle-tests.py`](scripts/plot-throttle-tests.py)
 | Rollback: InPlacePodResize | Not tested | Clears stale memory.high to max | **New** — non-disruptive remediation confirmed |
 | Multi-pod pressure (Run A, 14G) | Not tested | Aggressor throttled at memory.high, all pods survived | **New** — validates memory.high throttling under pressure |
 | Multi-pod pressure (Run B, 8G) | Not tested | Aggressor throttled at memory.high, all pods survived | **New** — confirms throttle behavior with smaller limit and abundant node headroom |
+| Guaranteed pod page cache (#137880) | Not tested | OOM-killed with TieredReservation; survived with None and MemoryQoS off | **New** — memory.min=memory.max blocks intra-cgroup page cache reclaim |
 
 ---
 
@@ -274,3 +341,4 @@ Plot script: [`scripts/plot-throttle-tests.py`](scripts/plot-throttle-tests.py)
 - [BestEffort memory.high fix — #138139](https://github.com/kubernetes/kubernetes/pull/138139)
 - [Rollback: clear stale memory.min/memory.low — #138903](https://github.com/kubernetes/kubernetes/pull/138903)
 - [Rollback: clear stale memory.high — #139377](https://github.com/kubernetes/kubernetes/pull/139377)
+- [Guaranteed pod page cache OOM with TieredReservation — #137880](https://github.com/kubernetes/kubernetes/issues/137880)

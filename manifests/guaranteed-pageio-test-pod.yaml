@@ -1,0 +1,93 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: guaranteed-pageio-test
+  namespace: default
+spec:
+  # Test: Does memory.min = memory.max on Guaranteed pods prevent page cache
+  # reclaim and cause OOM for file-heavy workloads?
+  # Ref: https://github.com/kubernetes/kubernetes/issues/137880
+  #
+  # Memory layout (cgroup limit = 512Mi):
+  #
+  #   Anonymous memory (cannot be reclaimed):
+  #     - 400Mi bytearray, every page touched via data[i]=1 to force
+  #       physical allocation (not just virtual address space reservation).
+  #     - This leaves only ~112Mi of headroom before hitting memory.max.
+  #
+  #   Page cache (kernel's file I/O cache, normally reclaimable):
+  #     - Each iteration writes 10 x 50Mi = 500Mi of files to a tmpdir,
+  #       then reads them back. This creates page cache entries in RAM.
+  #     - Page cache is created by the kernel automatically when a process
+  #       calls write() or read() on a file. The kernel keeps the file data
+  #       in RAM so future reads don't need to hit disk.
+  #     - Unlike anonymous memory, page cache CAN be discarded (reclaimed)
+  #       because the data is backed by files on disk.
+  #
+  #   Total memory demand per iteration: 400Mi anon + 500Mi page cache = 900Mi
+  #   Available under memory.max: 512Mi
+  #
+  # Question: With memory.min = 512Mi (= memory.max), does the kernel refuse
+  # to reclaim page cache (treating it as "protected"), causing the cgroup to
+  # OOM? Or does the kernel still reclaim page cache within the cgroup to
+  # enforce memory.max, regardless of memory.min?
+  containers:
+  - name: test
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import os, time, tempfile, sys
+
+      alloc_mb = 300
+      file_size_mb = 50
+      num_files = 10
+
+      # Step 1: Allocate anonymous memory (400Mi).
+      # bytearray() reserves virtual memory. We touch every page (4096 bytes)
+      # to force the kernel to back it with physical RAM. Without touching,
+      # the kernel uses lazy allocation and the memory wouldn't actually count
+      # against the cgroup until accessed.
+      print(f"Allocating {alloc_mb}MB resident memory...", flush=True)
+      data = bytearray(alloc_mb * 1024 * 1024)
+      for i in range(0, len(data), 4096):
+          data[i] = 1
+      print(f"Allocated {alloc_mb}MB resident memory", flush=True)
+
+      # Step 2: Generate page cache pressure via file I/O.
+      # Writing to files causes the kernel to allocate page cache (file-backed
+      # memory pages). Reading files back also populates page cache. With 10
+      # distinct files of 50Mi each, up to 500Mi of page cache can accumulate
+      # if the kernel doesn't reclaim it.
+      #
+      # We use distinct filenames (data-0 through data-9) so page cache from
+      # different files coexists in memory. If we reused a single filename,
+      # the old pages would be invalidated on each write, keeping usage low.
+      tmpdir = tempfile.mkdtemp()
+      print(f"Starting file I/O: {num_files} x {file_size_mb}MB files per iteration", flush=True)
+      print(f"Target: {alloc_mb}MB anon + {num_files * file_size_mb}MB page cache > 512Mi limit", flush=True)
+
+      iteration = 0
+      while True:
+          for i in range(num_files):
+              path = os.path.join(tmpdir, f"data-{i}.bin")
+              # write() -> kernel allocates page cache pages, fills them with
+              # our data, then flushes to disk asynchronously (writeback).
+              with open(path, "wb") as f:
+                  f.write(os.urandom(file_size_mb * 1024 * 1024))
+              # read() -> kernel checks page cache first. If pages were reclaimed,
+              # it reads from disk and re-populates page cache.
+              with open(path, "rb") as f:
+                  _ = f.read()
+          iteration += 1
+          print(f"Iteration {iteration}: wrote+read {num_files * file_size_mb}MB", flush=True)
+          time.sleep(1)
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+  restartPolicy: Never

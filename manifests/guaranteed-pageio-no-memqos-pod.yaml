@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: guaranteed-pageio-no-memqos
+  namespace: default
+spec:
+  # Baseline test: confirm that WITHOUT MemoryQoS (memory.min = 0), the kernel
+  # reclaims page cache normally and the pod survives heavy file I/O.
+  #
+  # This pod runs the same workload as guaranteed-pageio-test-pod.yaml.
+  # The difference is the kubelet config: MemoryQoS=false (or not set).
+  #
+  # With memory.min = 0, the kernel can freely reclaim page cache within the
+  # cgroup when approaching memory.max. This is the expected baseline behavior
+  # that the reporter in #137880 observed working correctly.
+  #
+  # Expected cgroup values:
+  #   memory.min  = 0       (no protection, page cache freely reclaimable)
+  #   memory.max  = 512Mi   (set by container runtime from limits)
+  #   memory.high = max
+  #
+  # Expected result: pod survives. memory.current stays below 512Mi because
+  # the kernel reclaims page cache as needed.
+  #
+  # Memory layout (same as guaranteed-pageio-test-pod.yaml):
+  #   Anonymous memory: 400Mi (bytearray, every page touched)
+  #   Page cache:       500Mi per iteration (10 x 50Mi files)
+  #   Total demand:     900Mi >> 512Mi limit
+  #   Headroom:         512Mi - 400Mi = ~112Mi for page cache
+  containers:
+  - name: test
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import os, time, tempfile, sys
+
+      alloc_mb = 300
+      file_size_mb = 50
+      num_files = 10
+
+      print(f"Allocating {alloc_mb}MB resident memory...", flush=True)
+      data = bytearray(alloc_mb * 1024 * 1024)
+      for i in range(0, len(data), 4096):
+          data[i] = 1
+      print(f"Allocated {alloc_mb}MB resident memory", flush=True)
+
+      tmpdir = tempfile.mkdtemp()
+      print(f"Starting file I/O: {num_files} x {file_size_mb}MB files per iteration", flush=True)
+      print(f"Target: {alloc_mb}MB anon + {num_files * file_size_mb}MB page cache > 512Mi limit", flush=True)
+
+      iteration = 0
+      while True:
+          for i in range(num_files):
+              path = os.path.join(tmpdir, f"data-{i}.bin")
+              with open(path, "wb") as f:
+                  f.write(os.urandom(file_size_mb * 1024 * 1024))
+              with open(path, "rb") as f:
+                  _ = f.read()
+          iteration += 1
+          print(f"Iteration {iteration}: wrote+read {num_files * file_size_mb}MB", flush=True)
+          time.sleep(1)
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "500m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+  restartPolicy: Never
