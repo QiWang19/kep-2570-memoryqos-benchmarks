@@ -1,0 +1,165 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: guaranteed-holder-1
+  namespace: default
+spec:
+  containers:
+  - name: holder
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import mmap, time
+      size = 1 * 1024 * 1024 * 1024  # 1Gi actual usage
+      m = mmap.mmap(-1, size)
+      m.write(b'\x01' * size)
+      print(f"Allocated and touched {size // (1024*1024)}Mi", flush=True)
+      while True:
+          time.sleep(60)
+    resources:
+      requests:
+        memory: "7Gi"
+        cpu: "250m"
+      limits:
+        memory: "7Gi"
+        cpu: "250m"
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: guaranteed-holder-2
+  namespace: default
+spec:
+  containers:
+  - name: holder
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import mmap, time
+      size = 1 * 1024 * 1024 * 1024
+      m = mmap.mmap(-1, size)
+      m.write(b'\x01' * size)
+      print(f"Allocated and touched {size // (1024*1024)}Mi", flush=True)
+      while True:
+          time.sleep(60)
+    resources:
+      requests:
+        memory: "7Gi"
+        cpu: "250m"
+      limits:
+        memory: "7Gi"
+        cpu: "250m"
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: guaranteed-holder-3
+  namespace: default
+spec:
+  containers:
+  - name: holder
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import mmap, time
+      size = 1 * 1024 * 1024 * 1024
+      m = mmap.mmap(-1, size)
+      m.write(b'\x01' * size)
+      print(f"Allocated and touched {size // (1024*1024)}Mi", flush=True)
+      while True:
+          time.sleep(60)
+    resources:
+      requests:
+        memory: "7Gi"
+        cpu: "250m"
+      limits:
+        memory: "7Gi"
+        cpu: "250m"
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: guaranteed-holder-4
+  namespace: default
+spec:
+  containers:
+  - name: holder
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import mmap, time
+      size = 1 * 1024 * 1024 * 1024
+      m = mmap.mmap(-1, size)
+      m.write(b'\x01' * size)
+      print(f"Allocated and touched {size // (1024*1024)}Mi", flush=True)
+      while True:
+          time.sleep(60)
+    resources:
+      requests:
+        memory: "7Gi"
+        cpu: "250m"
+      limits:
+        memory: "7Gi"
+        cpu: "250m"
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: burstable-holder
+  namespace: default
+spec:
+  containers:
+  - name: holder
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import mmap, time
+      size = 512 * 1024 * 1024  # 512Mi
+      m = mmap.mmap(-1, size)
+      m.write(b'\x01' * size)
+      print(f"Allocated and touched {size // (1024*1024)}Mi", flush=True)
+      while True:
+          time.sleep(60)
+    resources:
+      requests:
+        memory: "1Gi"
+      limits:
+        memory: "4Gi"
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: besteffort-holder
+  namespace: default
+spec:
+  containers:
+  - name: holder
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import mmap, time
+      size = 512 * 1024 * 1024  # 512Mi
+      m = mmap.mmap(-1, size)
+      m.write(b'\x01' * size)
+      print(f"Allocated and touched {size // (1024*1024)}Mi", flush=True)
+      while True:
+          time.sleep(60)
+    resources: {}
+  restartPolicy: Never

@@ -303,17 +303,114 @@ Kubelet config: `MemoryQoS: false`. Pod: [`manifests/guaranteed-pageio-no-memqos
 
 Same behavior as Run 2. The kernel freely reclaims page cache within the cgroup as it approaches `memory.max`.
 
+### Run 4: Burstable with memory requests=limits, no CPU (memory.low = 512Mi)
+
+Kubelet config: `MemoryQoS: true`, `memoryReservationPolicy: TieredReservation`.
+
+Pod spec: [`manifests/burstable-pageio-memonly-pod.yaml`](manifests/burstable-pageio-memonly-pod.yaml) — memory requests=512Mi, limits=512Mi, no CPU requests/limits. Kubernetes classifies this as Burstable (Guaranteed requires requests=limits for all specified resource types including CPU). With TieredReservation, the pod gets `memory.low` instead of `memory.min`.
+
+| Metric | Value |
+|--------|-------|
+| memory.min | 0 |
+| memory.low | 536870912 (512 MiB) |
+| memory.high | max |
+| memory.max | 536870912 (512 MiB) |
+| memory.current | 461-511 MiB (oscillating) |
+| Iterations completed | 21+ |
+| oom_kill | 0 |
+| low events | 725,184 |
+| Outcome | **Survived** |
+
+`memory.low` (soft protection) does not block intra-cgroup page cache reclaim. The high `low` event count shows the kernel is reclaiming page cache past the `memory.low` boundary to enforce `memory.max`. This is a workaround for #137880: omit CPU requests/limits so the pod is classified as Burstable, keeping memory requests=limits. The pod gets `memory.low=512Mi` (soft protection from external reclaim) without `memory.min` blocking page cache reclaim.
+
 ### Summary
 
-| Run | MemoryQoS | Policy | memory.min | Outcome |
-|-----|-----------|--------|-----------|---------|
-| Run 1 | true | TieredReservation | 512 MiB | **OOM-killed** |
-| Run 2 | true | None | 0 | **Survived** |
-| Run 3 | false | — | 0 | **Survived** |
+| Run | QoS | MemoryQoS | Policy | memory.min | memory.low | Outcome |
+|-----|-----|-----------|--------|-----------|-----------|---------|
+| Run 1 | Guaranteed | true | TieredReservation | 512 MiB | 0 | **OOM-killed** |
+| Run 2 | Guaranteed | true | None | 0 | 0 | **Survived** |
+| Run 3 | Guaranteed | false | — | 0 | 0 | **Survived** |
+| Run 4 | Burstable | true | TieredReservation | 0 | 512 MiB | **Survived** |
 
-`memory.min = memory.max` (TieredReservation on Guaranteed pods) blocks intra-cgroup page cache reclaim, confirming [#137880](https://github.com/kubernetes/kubernetes/issues/137880). This only affects `memoryReservationPolicy: TieredReservation`, not the default (`None`). Workloads with heavy file I/O (databases, image repos) on Guaranteed pods should use `memoryReservationPolicy: None` or set requests < limits (Burstable) to avoid this.
+`memory.min = memory.max` (TieredReservation on Guaranteed pods) blocks intra-cgroup page cache reclaim, confirming [#137880](https://github.com/kubernetes/kubernetes/issues/137880). `memory.low` does not block intra-cgroup reclaim — Burstable pods with the same workload survive. This only affects `memoryReservationPolicy: TieredReservation`, not the default (`None`).
 
-Raw data: [`data/guaranteed-pageio-run3-no-memqos.txt`](data/guaranteed-pageio-run3-no-memqos.txt)
+Raw data: [`data/guaranteed-pageio-run3-no-memqos.txt`](data/guaranteed-pageio-run3-no-memqos.txt), [`data/burstable-pageio-memonly-tiered.txt`](data/burstable-pageio-memonly-tiered.txt)
+
+---
+
+## 8. Node Stability with sum(memory.min) Near Capacity
+
+Validates that the node remains stable when Guaranteed pod reservations consume most of the allocatable memory, with all three QoS classes present and a BestEffort aggressor driving memory pressure.
+
+**Pod specs**: [`manifests/capacity-pressure-holders.yaml`](manifests/capacity-pressure-holders.yaml), [`manifests/capacity-pressure-aggressor.yaml`](manifests/capacity-pressure-aggressor.yaml)
+
+Kubelet config: `MemoryQoS=true`, `memoryReservationPolicy=TieredReservation`. Node allocatable: 30.9 GiB.
+
+| Pod | QoS | Requests/Limits | Actual Usage | memory.min | memory.low |
+|-----|-----|-----------------|-------------|-----------|-----------|
+| guaranteed-holder-{1..4} | Guaranteed | 7Gi/7Gi each | 1Gi each | 7Gi each | 0 |
+| burstable-holder | Burstable | 1Gi/4Gi | 512Mi | 0 | 1Gi |
+| besteffort-holder | BestEffort | none | 512Mi | 0 | 0 |
+| **Totals** | | **29Gi requests** | **~5.5Gi** | **28Gi** | **1Gi** |
+
+sum(memory.min) = 28 GiB = **90.6%** of allocatable.
+kubepods.slice memory.min = 29,766 Mi (~29 GiB, includes burstable memory.low + coredns).
+
+### Steady State (5 min, no aggressor)
+
+| Metric | Value |
+|--------|-------|
+| kubepods memory.min | 29,766 Mi (stable) |
+| burstable memory.low | 1,094 Mi |
+| MemAvailable | 17,155 to 17,286 Mi |
+| Max kubelet API latency | 45ms |
+| MemoryPressure condition | False (never triggered) |
+| All pods status | Running (stable throughout) |
+
+### Under Pressure (BestEffort aggressor, 50Mi/0.5s)
+
+Aggressor: BestEffort pod allocating 50Mi every 0.5s with no resource requests or limits (no protection). [`manifests/capacity-pressure-aggressor.yaml`](manifests/capacity-pressure-aggressor.yaml).
+
+| Metric | Value |
+|--------|-------|
+| Aggressor peak `memory.current` | 20,482 Mi (~20 GiB) |
+| Time to OOM kill | ~212s (~3.5 min) |
+| Aggressor `memory.events` oom_kill counter | 2 |
+| Min MemAvailable (during pressure) | 1,118 Mi |
+| Max kubelet API latency | 502ms (when MemAvailable hit 1,118 Mi minimum) |
+| MemoryPressure condition | False (never triggered) |
+
+**Pod survival:**
+
+| Pod | Outcome |
+|-----|---------|
+| guaranteed-holder-{1..4} | **Survived**: Running throughout, 1,032Mi stable, no high/oom events |
+| burstable-holder | **Survived**: Running throughout, 518Mi stable, no high/oom events |
+| besteffort-holder | **Survived**: Running throughout, 518Mi stable, no high/oom events |
+| besteffort-aggressor | **OOM killed** at 20,482Mi, then Failed |
+
+### MemAvailable Timeline
+
+| Elapsed | Aggressor Memory | MemAvailable | kubelet API |
+|---------|-----------------|-------------|-------------|
+| 0s | 0 | 16,671 Mi | 30ms |
+| 48s | 4,824 Mi | 12,344 Mi | 36ms |
+| 95s | 9,350 Mi | 8,117 Mi | 47ms |
+| 143s | 13,900 Mi | 5,050 Mi | 34ms |
+| 190s | 18,483 Mi | 1,849 Mi | 36ms |
+| 212s | 20,482 Mi | 1,118 Mi | 502ms |
+| 216s | 13,085 Mi (OOM) | 1,139 Mi | 187ms |
+| 238s | 0 (Failed) | 20,650 Mi | 36ms |
+
+### Analysis
+
+With sum(memory.min) at 90.6% of allocatable, the node remained stable throughout both steady state and extreme memory pressure. The BestEffort aggressor consumed ~20 GiB before the kernel OOM killed it. The aggressor had no memory.min or memory.low protection, so the kernel correctly targeted it. All protected pods (Guaranteed with memory.min, Burstable with memory.low) and even the unprotected BestEffort holder (which was idle at 512Mi) survived.
+
+kubelet API latency stayed under 50ms until MemAvailable dropped below 2 GiB, spiking to 502ms when MemAvailable hit its 1,118 Mi minimum but still responsive. MemAvailable recovered to ~20 GiB within seconds of the aggressor termination. The MemoryPressure node condition was never triggered because the kubelet eviction thresholds were not breached (the OOM kill was a kernel level action, not a kubelet eviction).
+
+Deploy script: [`scripts/deploy-capacity-pressure.sh`](scripts/deploy-capacity-pressure.sh). Monitor script: [`scripts/monitor-capacity-pressure.sh`](scripts/monitor-capacity-pressure.sh).
+
+Raw data: [`data/capacity-pressure-steady.csv`](data/capacity-pressure-steady.csv), [`data/capacity-pressure-test.csv`](data/capacity-pressure-test.csv)
 
 ---
 
@@ -331,7 +428,8 @@ Raw data: [`data/guaranteed-pageio-run3-no-memqos.txt`](data/guaranteed-pageio-r
 | Rollback: InPlacePodResize | Not tested | Clears stale memory.high to max | **New** — non-disruptive remediation confirmed |
 | Multi-pod pressure (Run A, 14G) | Not tested | Aggressor throttled at memory.high, all pods survived | **New** — validates memory.high throttling under pressure |
 | Multi-pod pressure (Run B, 8G) | Not tested | Aggressor throttled at memory.high, all pods survived | **New** — confirms throttle behavior with smaller limit and abundant node headroom |
-| Guaranteed pod page cache (#137880) | Not tested | OOM-killed with TieredReservation; survived with None and MemoryQoS off | **New** — memory.min=memory.max blocks intra-cgroup page cache reclaim |
+| Guaranteed pod page cache (#137880) | Not tested | OOM-killed with TieredReservation; survived with None, MemoryQoS off, and Burstable | **New** — memory.min=memory.max blocks intra-cgroup page cache reclaim; memory.low does not |
+| Node stability (sum(memory.min) near capacity) | Not tested | Node stable with 28Gi memory.min (90.6% of allocatable); aggressor OOM killed, all protected pods survived | **New** — validates node stability under sustained memory pressure with memory.min near capacity |
 
 ---
 

@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: burstable-pageio-test
+  namespace: default
+spec:
+  # Test: Does a Burstable pod with TieredReservation survive the same
+  # page cache workload that OOM-kills Guaranteed pods?
+  # Burstable gets memory.low (soft) instead of memory.min (hard),
+  # so the kernel should be able to reclaim page cache within the cgroup.
+  # Ref: https://github.com/kubernetes/kubernetes/issues/137880
+  containers:
+  - name: test
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import os, time, tempfile, sys
+
+      alloc_mb = 300
+      file_size_mb = 50
+      num_files = 10
+
+      print(f"Allocating {alloc_mb}MB resident memory...", flush=True)
+      data = bytearray(alloc_mb * 1024 * 1024)
+      for i in range(0, len(data), 4096):
+          data[i] = 1
+      print(f"Allocated {alloc_mb}MB resident memory", flush=True)
+
+      tmpdir = tempfile.mkdtemp()
+      print(f"Starting file I/O: {num_files} x {file_size_mb}MB files per iteration", flush=True)
+      print(f"Target: {alloc_mb}MB anon + {num_files * file_size_mb}MB page cache > 512Mi limit", flush=True)
+
+      iteration = 0
+      while True:
+          for i in range(num_files):
+              path = os.path.join(tmpdir, f"data-{i}.bin")
+              with open(path, "wb") as f:
+                  f.write(os.urandom(file_size_mb * 1024 * 1024))
+              with open(path, "rb") as f:
+                  _ = f.read()
+          iteration += 1
+          print(f"Iteration {iteration}: wrote+read {num_files * file_size_mb}MB", flush=True)
+          time.sleep(1)
+    resources:
+      requests:
+        memory: "256Mi"
+      limits:
+        memory: "512Mi"
+  restartPolicy: Never
