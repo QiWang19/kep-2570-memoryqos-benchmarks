@@ -1,0 +1,41 @@
+=== Burstable Pod Page I/O Test - Memory-Only (req=lim, no CPU) ===
+Date: 2026-06-12T01:37:28Z
+
+Pod: burstable-pageio-memonly (Burstable, memory requests=512Mi, limits=512Mi, no CPU)
+Workload: 300Mi anonymous memory + 500Mi page cache per iteration (10 x 50Mi files)
+Kubelet: MemoryQoS=true, memoryReservationPolicy=TieredReservation
+Kernel: 7.0.11-200.fc44.x86_64
+
+=== Cgroup Settings ===
+Pod level:
+  memory.min: 0
+  memory.low: 536870912 (512 MiB)
+Container level:
+  memory.min: 0
+  memory.low: 536870912 (512 MiB)
+  memory.high: max
+  memory.max: 536870912 (512 MiB)
+
+=== Data Collection ===
+timestamp,memory_current_mib,memory_min,memory_low,memory_max,memory_high,anon_mib,file_mib,oom,oom_kill,high_ev,low_ev
+2026-06-11T21:37:28-04:00,491,0,536870912,536870912,max,390,100,0,0,0,510048
+2026-06-11T21:37:30-04:00,469,0,536870912,536870912,max,379,100,0,0,0,526122
+2026-06-11T21:37:32-04:00,468,0,536870912,536870912,max,368,100,0,0,0,540408
+2026-06-11T21:37:34-04:00,483,0,536870912,536870912,max,383,100,0,0,0,554664
+2026-06-11T21:37:36-04:00,504,0,536870912,536870912,max,404,100,0,0,0,568908
+2026-06-11T21:37:38-04:00,461,0,536870912,536870912,max,369,100,0,0,0,584856
+2026-06-11T21:37:40-04:00,461,0,536870912,536870912,max,358,100,0,0,0,600780
+2026-06-11T21:37:42-04:00,461,0,536870912,536870912,max,397,100,0,0,0,618480
+2026-06-11T21:37:44-04:00,475,0,536870912,536870912,max,375,100,0,0,0,634488
+2026-06-11T21:37:46-04:00,511,0,536870912,536870912,max,408,100,0,0,0,650196
+2026-06-11T21:37:48-04:00,507,0,536870912,536870912,max,359,100,0,0,0,662970
+2026-06-11T21:37:50-04:00,488,0,536870912,536870912,max,388,100,0,0,0,677214
+2026-06-11T21:37:52-04:00,463,0,536870912,536870912,max,363,100,0,0,0,691464
+2026-06-11T21:37:54-04:00,461,0,536870912,536870912,max,358,100,0,0,0,707466
+2026-06-11T21:37:56-04:00,461,0,536870912,536870912,max,358,100,0,0,0,725184
+
+=== Result ===
+Pod survived 21+ iterations. Page cache reclaimed normally with memory.min=0, memory.low=512Mi.
+memory.low (soft protection) does not block intra-cgroup page cache reclaim.
+No memory.high throttling (memory.high=max because requests=limits yields 0 gap).
+Low events: 725,184 — kernel signaled reclaim pressure against memory.low but still reclaimed page cache.

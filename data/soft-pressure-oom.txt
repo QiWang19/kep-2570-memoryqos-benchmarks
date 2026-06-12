@@ -1,0 +1,18 @@
+Nov 19 16:57:32 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: python3 invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=1000
+Nov 19 16:57:32 qiwan-thinkpadt14gen4.ibmlowe.csb kernel:  oom_kill_process.cold+0xa/0xba
+Nov 19 16:57:32 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: Memory cgroup min protection 256000kB -- low protection 1120256kB
+Nov 19 16:57:32 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Nov 19 16:57:32 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: [    934]   996   934     4011      261       84      177         0    77824      187          -900 systemd-oomd
+Nov 19 16:57:33 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=crio-da503b4e76b5149d9569307c5988e7249cc16bf62cbdf092105534560f0d6ca0.scope,mems_allowed=0,global_oom,task_memcg=/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podcba6be51_7e58_4c1b_8660_6cca6179d4b3.slice/crio-da503b4e76b5149d9569307c5988e7249cc16bf62cbdf092105534560f0d6ca0.scope,task=python3,pid=1083933,uid=0
+Nov 19 16:57:33 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: Out of memory: Killed process 1083933 (python3) total-vm:18702232kB, anon-rss:55224kB, file-rss:3616kB, shmem-rss:18631220kB, UID:0 pgtables:36632kB oom_score_adj:1000
+Nov 19 16:57:33 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: Tasks in /kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podcba6be51_7e58_4c1b_8660_6cca6179d4b3.slice/crio-da503b4e76b5149d9569307c5988e7249cc16bf62cbdf092105534560f0d6ca0.scope are going to be killed due to memory.oom.group set
+Nov 19 16:57:33 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: Out of memory: Killed process 1083933 (python3) total-vm:18702232kB, anon-rss:55224kB, file-rss:3616kB, shmem-rss:18631220kB, UID:0 pgtables:36632kB oom_score_adj:1000
+Nov 19 16:57:34 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: code invoked oom-killer: gfp_mask=0x140cca(GFP_HIGHUSER_MOVABLE|__GFP_COMP), order=0, oom_score_adj=100
+Nov 19 16:57:34 qiwan-thinkpadt14gen4.ibmlowe.csb kernel:  oom_kill_process.cold+0xa/0xba
+Nov 19 16:57:34 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: Memory cgroup min protection 256000kB -- low protection 1120256kB
+Nov 19 16:57:34 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: [  pid  ]   uid  tgid total_vm      rss rss_anon rss_file rss_shmem pgtables_bytes swapents oom_score_adj name
+Nov 19 16:57:34 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: [    934]   996   934     4011      272       84      188         0    77824      187          -900 systemd-oomd
+Nov 19 16:57:34 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=user.slice,mems_allowed=0,global_oom,task_memcg=/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pode8f16d12_c1c5_45a5_86da_c260c40b1dfb.slice/crio-4bacd604a61ef6fa7dc41ef145c40325ca02e086833aba22fd055f0a747de4d9.scope,task=python3,pid=1080309,uid=0
+Nov 19 16:57:34 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: Out of memory: Killed process 1080309 (python3) total-vm:424856kB, anon-rss:5012kB, file-rss:3500kB, shmem-rss:409600kB, UID:0 pgtables:864kB oom_score_adj:984
+Nov 19 16:57:34 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: Tasks in /kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pode8f16d12_c1c5_45a5_86da_c260c40b1dfb.slice/crio-4bacd604a61ef6fa7dc41ef145c40325ca02e086833aba22fd055f0a747de4d9.scope are going to be killed due to memory.oom.group set
+Nov 19 16:57:34 qiwan-thinkpadt14gen4.ibmlowe.csb kernel: Out of memory: Killed process 1080309 (python3) total-vm:424856kB, anon-rss:5012kB, file-rss:3500kB, shmem-rss:409600kB, UID:0 pgtables:864kB oom_score_adj:984

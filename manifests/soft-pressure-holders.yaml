@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: guaranteed-soft-holder
+  namespace: default
+spec:
+  containers:
+  - name: holder
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import mmap, time
+
+      size = 400 * 1024 * 1024
+      data = mmap.mmap(-1, size)
+      block = b'\x01' * (1024 * 1024)
+      for _ in range(size // len(block)):
+          data.write(block)
+      print(f"Allocated and touched {size // (1024 * 1024)}Mi", flush=True)
+      while True:
+          time.sleep(60)
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "250m"
+      limits:
+        memory: "512Mi"
+        cpu: "250m"
+  restartPolicy: Never
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: burstable-soft-holder
+  namespace: default
+spec:
+  containers:
+  - name: holder
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import mmap, time
+
+      size = 400 * 1024 * 1024
+      data = mmap.mmap(-1, size)
+      block = b'\x01' * (1024 * 1024)
+      for _ in range(size // len(block)):
+          data.write(block)
+      print(f"Allocated and touched {size // (1024 * 1024)}Mi", flush=True)
+      while True:
+          time.sleep(60)
+    resources:
+      requests:
+        memory: "512Mi"
+      limits:
+        memory: "512Mi"
+  restartPolicy: Never

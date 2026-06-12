@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: besteffort-aggressor
+  namespace: default
+spec:
+  containers:
+  - name: aggressor
+    image: python:3.12-slim
+    command:
+    - python3
+    - -c
+    - |
+      import mmap, time
+      chunks = []
+      total = 0
+      chunk_size = 50 * 1024 * 1024  # 50Mi per step
+      delay = 0.5
+      while True:
+          m = mmap.mmap(-1, chunk_size)
+          m.write(b'\x01' * chunk_size)
+          chunks.append(m)
+          total += chunk_size
+          print(f"Allocated {total // (1024*1024)}Mi", flush=True)
+          time.sleep(delay)
+  restartPolicy: Never

@@ -303,17 +303,219 @@ Kubelet config: `MemoryQoS: false`. Pod: [`manifests/guaranteed-pageio-no-memqos
 
 Same behavior as Run 2. The kernel freely reclaims page cache within the cgroup as it approaches `memory.max`.
 
+### Run 4: Burstable with memory requests=limits, no CPU (memory.low = 512Mi)
+
+Kubelet config: `MemoryQoS: true`, `memoryReservationPolicy: TieredReservation`.
+
+Pod spec: [`manifests/burstable-pageio-memonly-pod.yaml`](manifests/burstable-pageio-memonly-pod.yaml) — memory requests=512Mi, limits=512Mi, no CPU requests/limits. Kubernetes classifies this as Burstable (Guaranteed requires requests=limits for all specified resource types including CPU). With TieredReservation, the pod gets `memory.low` instead of `memory.min`.
+
+| Metric | Value |
+|--------|-------|
+| memory.min | 0 |
+| memory.low | 536870912 (512 MiB) |
+| memory.high | max |
+| memory.max | 536870912 (512 MiB) |
+| memory.current | 461-511 MiB (oscillating) |
+| Iterations completed | 21+ |
+| oom_kill | 0 |
+| low events | 725,184 |
+| Outcome | **Survived** |
+
+`memory.low` (soft protection) does not block intra-cgroup page cache reclaim. The high `low` event count shows the kernel is reclaiming page cache past the `memory.low` boundary to enforce `memory.max`. This is a workaround for #137880: omit CPU requests/limits so the pod is classified as Burstable, keeping memory requests=limits. The pod gets `memory.low=512Mi` (soft protection from external reclaim) without `memory.min` blocking page cache reclaim.
+
+### Run 5: memoryReservationPolicy: Soft (Guaranteed pod, memory.low = 512Mi)
+
+Follow-up rerun on 2026-11-19 with the Soft policy, which sets `memory.low` for Guaranteed pods instead of `memory.min`.
+
+| Component | Version |
+|-----------|---------|
+| Kernel | 7.3.4-200.fc44.x86_64 |
+| Kubelet | v1.38.0-beta.0.633+8b90e07d136e54-dirty |
+| Container Runtime | CRI-O 1.25.5 |
+| Cluster | local-up-cluster.sh, single node |
+| cgroup | v2 |
+| Node allocatable memory | 32384680Ki (30.9 GiB) |
+
+Kubelet config: `MemoryQoS=true`, `NodeMemoryReservationPolicy=true`, `memoryReservationPolicy=Soft`.
+
+Pod spec: [`manifests/guaranteed-pageio-test-pod.yaml`](manifests/guaranteed-pageio-test-pod.yaml) - Guaranteed pod, requests=limits=512Mi.
+
+| Metric | Value |
+|--------|-------|
+| memory.min | 0 |
+| memory.low | 536870912 (512 MiB) |
+| memory.high | max |
+| memory.max | 536870912 (512 MiB) |
+| memory.current | 461-511.9 MiB (oscillating) |
+| Run duration | 200.7s |
+| Iterations completed | 64 |
+| low events | 39,456 |
+| max events | 85,726 |
+| oom_kill | 0 |
+| Outcome | **Survived** |
+
+The `max` event counter records attempts to enter the hard limit; the kernel successfully reclaimed page cache and did not kill the container. Page-cache memory peaked at only ~102 MiB while each iteration generated 500 MiB of file I/O, showing that reclaim continued past the pod's `memory.low` boundary.
+
+Raw data: [`data/guaranteed-pageio-soft.csv`](data/guaranteed-pageio-soft.csv)
+
+### Run 6: memoryReservationPolicy: Soft (Guaranteed and Burstable pods concurrently)
+
+This run verifies that Soft applies across QoS classes and that the shared cgroup parents account for both requests. The same page-cache workload ran in a Guaranteed pod and a Burstable pod at the same time.
+
+**Pod specs**: [`manifests/guaranteed-pageio-test-pod.yaml`](manifests/guaranteed-pageio-test-pod.yaml), [`manifests/burstable-pageio-memonly-pod.yaml`](manifests/burstable-pageio-memonly-pod.yaml).
+
+Kubelet config and node environment are the same as Run 5.
+
+| Pod | QoS | Requests/Limits | memory.min | memory.low | Peak memory | Iterations | low events | max events | oom_kill | Outcome |
+|-----|-----|-----------------|-----------|-----------|-------------|------------|------------|------------|----------|---------|
+| guaranteed-pageio-test | Guaranteed | 512Mi/512Mi, CPU 500m/500m | 0 | 512 MiB | 511.9 MiB | 54 | 52,398 | 77,593 | 0 | **Survived** |
+| burstable-pageio-memonly | Burstable | 512Mi/512Mi, no CPU | 0 | 512 MiB | 511.9 MiB | 90 | 93,705 | 131,019 | 0 | **Survived** |
+
+Run duration was ~207s. Both pods remained `Running` and `Ready` with zero restarts. The Burstable pod completed more iterations because the concurrent Guaranteed workload competed for I/O.
+
+Observed cgroup hierarchy:
+
+| Level | memory.min | memory.low | Notes |
+|-------|-----------|-----------|-------|
+| kubepods.slice | 0 | 1,094 MiB | Guaranteed 512 MiB + Burstable 512 MiB + CoreDNS 70 MiB |
+| kubepods-burstable.slice | 0 | 582 MiB | Burstable test 512 MiB + CoreDNS 70 MiB |
+| Guaranteed pod | 0 | 512 MiB | Pod cgroup directly under kubepods.slice |
+| Burstable pod | 0 | 512 MiB | Pod cgroup under kubepods-burstable.slice |
+
+The mixed run confirms that Soft does not block intra-cgroup page-cache reclaim for either QoS class, and builds parent `memory.low` from both Guaranteed and Burstable requests. Run 7 covers the separate node-pressure case.
+
+Raw data: [`data/guaranteed-pageio-soft-mixed.csv`](data/guaranteed-pageio-soft-mixed.csv), [`data/burstable-pageio-soft-mixed.csv`](data/burstable-pageio-soft-mixed.csv)
+
+### Run 7: Soft with node-level pressure (Guaranteed vs Burstable)
+
+This run tests whether equal `memory.low` values produce equal survival under global memory pressure. It is deliberately different from Run 1: both holders have `memory.min=0`, so this is not the intra-cgroup `memory.min=memory.max` page-cache failure.
+
+**Pod specs**: [`manifests/soft-pressure-holders.yaml`](manifests/soft-pressure-holders.yaml), [`manifests/capacity-pressure-aggressor.yaml`](manifests/capacity-pressure-aggressor.yaml). Monitor: [`scripts/monitor-soft-pressure.sh`](scripts/monitor-soft-pressure.sh).
+
+| Pod | QoS | Requests/Limits | Working set | memory.min | memory.low |
+|-----|-----|-----------------|-------------|-----------|-----------|
+| guaranteed-soft-holder | Guaranteed | 512Mi/512Mi, CPU 250m/250m | 400Mi anonymous | 0 | 512 MiB |
+| burstable-soft-holder | Burstable | 512Mi/512Mi, no CPU | 400Mi anonymous | 0 | 512 MiB |
+| besteffort-aggressor | BestEffort | none | allocate 50Mi per 0.5s | 0 | 0 |
+
+| Metric | Value |
+|--------|-------|
+| Guaranteed peak memory.current | 408 MiB |
+| Guaranteed low events | 3,938 |
+| Guaranteed oom_kill | 0 |
+| Guaranteed outcome | **Running** |
+| Burstable peak memory.current | 413 MiB |
+| Burstable low events | 4,690 |
+| Burstable oom_kill | 2 |
+| Burstable outcome | **OOMKilled** |
+| Aggressor peak shmem | ~18.6 GiB |
+| Minimum `MemAvailable` observed | 1,072 Mi |
+| Maximum memory PSI `some avg10` | 38.26 |
+
+The kernel killed the BestEffort aggressor first. A second global OOM one second later selected the Burstable holder:
+
+```text
+oom-kill:constraint=CONSTRAINT_NONE,...,global_oom,
+  task_memcg=/kubepods.slice/kubepods-burstable.slice/...,
+  task=python3,...
+Out of memory: Killed process ... oom_score_adj:984
+```
+
+The Guaranteed holder in the same OOM dump had `oom_score_adj=-997`. Both holders were below their 512 MiB `memory.low` while alive, yet the Burstable holder was still selected during global OOM. This shows that `memory.low` does not itself protect a pod from the global OOM victim-selection path. Soft prevents the Run 1 failure mode, where `memory.min=memory.max` blocks local page-cache reclaim, but it does not make Guaranteed and Burstable pods equally likely to survive an actual global OOM. Conversely, Run 1 confirms that `memory.min=memory.max` can produce an OOM-killed pod, while Run 7 shows that `min=max` is not required for OOM: with `memory.min=0`, global OOM still killed the Burstable pod.
+
+Raw data: [`data/soft-pressure-soft-holders.csv`](data/soft-pressure-soft-holders.csv), [`data/soft-pressure-oom.txt`](data/soft-pressure-oom.txt)
+
 ### Summary
 
-| Run | MemoryQoS | Policy | memory.min | Outcome |
-|-----|-----------|--------|-----------|---------|
-| Run 1 | true | TieredReservation | 512 MiB | **OOM-killed** |
-| Run 2 | true | None | 0 | **Survived** |
-| Run 3 | false | — | 0 | **Survived** |
+| Run | QoS | MemoryQoS | Policy | memory.min | memory.low | Outcome |
+|-----|-----|-----------|--------|-----------|-----------|---------|
+| Run 1 | Guaranteed | true | TieredReservation | 512 MiB | 0 | **OOM-killed** |
+| Run 2 | Guaranteed | true | None | 0 | 0 | **Survived** |
+| Run 3 | Guaranteed | false | — | 0 | 0 | **Survived** |
+| Run 4 | Burstable | true | TieredReservation | 0 | 512 MiB | **Survived** |
+| Run 5 | Guaranteed | true | Soft | 0 | 512 MiB | **Survived** |
+| Run 6 | Guaranteed + Burstable | true | Soft | 0 | 512 MiB each | **Both survived** |
+| Run 7 | Guaranteed + Burstable | true | Soft | 0 | 512 MiB each | **Guaranteed survived; Burstable OOM-killed under global OOM** |
 
-`memory.min = memory.max` (TieredReservation on Guaranteed pods) blocks intra-cgroup page cache reclaim, confirming [#137880](https://github.com/kubernetes/kubernetes/issues/137880). This only affects `memoryReservationPolicy: TieredReservation`, not the default (`None`). Workloads with heavy file I/O (databases, image repos) on Guaranteed pods should use `memoryReservationPolicy: None` or set requests < limits (Burstable) to avoid this.
+`memory.min = memory.max` (TieredReservation on Guaranteed pods) blocks intra-cgroup page cache reclaim, confirming [#137880](https://github.com/kubernetes/kubernetes/issues/137880). `memory.low` does not block intra-cgroup reclaim, so the page-cache workload survives for Guaranteed and Burstable pods under Soft. Run 7 shows the boundary of that result: with `memory.min=0` on both holders, a global OOM still killed the Burstable holder while the Guaranteed holder survived. Soft fixes the local page-cache reclaim failure, but it does not make global OOM outcomes symmetric across QoS classes.
 
-Raw data: [`data/guaranteed-pageio-run3-no-memqos.txt`](data/guaranteed-pageio-run3-no-memqos.txt)
+Raw data: [`data/guaranteed-pageio-run3-no-memqos.txt`](data/guaranteed-pageio-run3-no-memqos.txt), [`data/burstable-pageio-memonly-tiered.txt`](data/burstable-pageio-memonly-tiered.txt), [`data/guaranteed-pageio-soft.csv`](data/guaranteed-pageio-soft.csv), [`data/guaranteed-pageio-soft-mixed.csv`](data/guaranteed-pageio-soft-mixed.csv), [`data/burstable-pageio-soft-mixed.csv`](data/burstable-pageio-soft-mixed.csv), [`data/soft-pressure-soft-holders.csv`](data/soft-pressure-soft-holders.csv), [`data/soft-pressure-oom.txt`](data/soft-pressure-oom.txt)
+
+---
+
+## 8. Node Stability with sum(memory.min) Near Capacity
+
+Validates that the node remains stable when Guaranteed pod reservations consume most of the allocatable memory, with all three QoS classes present and a BestEffort aggressor driving memory pressure.
+
+**Pod specs**: [`manifests/capacity-pressure-holders.yaml`](manifests/capacity-pressure-holders.yaml), [`manifests/capacity-pressure-aggressor.yaml`](manifests/capacity-pressure-aggressor.yaml)
+
+Kubelet config: `MemoryQoS=true`, `memoryReservationPolicy=TieredReservation`. Node allocatable: 30.9 GiB.
+
+| Pod | QoS | Requests/Limits | Actual Usage | memory.min | memory.low |
+|-----|-----|-----------------|-------------|-----------|-----------|
+| guaranteed-holder-{1..4} | Guaranteed | 7Gi/7Gi each | 1Gi each | 7Gi each | 0 |
+| burstable-holder | Burstable | 1Gi/4Gi | 512Mi | 0 | 1Gi |
+| besteffort-holder | BestEffort | none | 512Mi | 0 | 0 |
+| **Totals** | | **29Gi requests** | **~5.5Gi** | **28Gi** | **1Gi** |
+
+sum(memory.min) = 28 GiB = **90.6%** of allocatable.
+kubepods.slice memory.min = 29,766 Mi (~29 GiB, includes burstable memory.low + coredns).
+
+### Steady State (5 min, no aggressor)
+
+| Metric | Value |
+|--------|-------|
+| kubepods memory.min | 29,766 Mi (stable) |
+| burstable memory.low | 1,094 Mi |
+| MemAvailable | 17,155 to 17,286 Mi |
+| Max kubelet API latency | 45ms |
+| MemoryPressure condition | False (never triggered) |
+| All pods status | Running (stable throughout) |
+
+### Under Pressure (BestEffort aggressor, 50Mi/0.5s)
+
+Aggressor: BestEffort pod allocating 50Mi every 0.5s with no resource requests or limits (no protection). [`manifests/capacity-pressure-aggressor.yaml`](manifests/capacity-pressure-aggressor.yaml).
+
+| Metric | Value |
+|--------|-------|
+| Aggressor peak `memory.current` | 20,482 Mi (~20 GiB) |
+| Time to OOM kill | ~212s (~3.5 min) |
+| Aggressor `memory.events` oom_kill counter | 2 |
+| Min MemAvailable (during pressure) | 1,118 Mi |
+| Max kubelet API latency | 502ms (when MemAvailable hit 1,118 Mi minimum) |
+| MemoryPressure condition | False (never triggered) |
+
+**Pod survival:**
+
+| Pod | Outcome |
+|-----|---------|
+| guaranteed-holder-{1..4} | **Survived**: Running throughout, 1,032Mi stable, no high/oom events |
+| burstable-holder | **Survived**: Running throughout, 518Mi stable, no high/oom events |
+| besteffort-holder | **Survived**: Running throughout, 518Mi stable, no high/oom events |
+| besteffort-aggressor | **OOM killed** at 20,482Mi, then Failed |
+
+### MemAvailable Timeline
+
+| Elapsed | Aggressor Memory | MemAvailable | kubelet API |
+|---------|-----------------|-------------|-------------|
+| 0s | 0 | 16,671 Mi | 30ms |
+| 48s | 4,824 Mi | 12,344 Mi | 36ms |
+| 95s | 9,350 Mi | 8,117 Mi | 47ms |
+| 143s | 13,900 Mi | 5,050 Mi | 34ms |
+| 190s | 18,483 Mi | 1,849 Mi | 36ms |
+| 212s | 20,482 Mi | 1,118 Mi | 502ms |
+| 216s | 13,085 Mi (OOM) | 1,139 Mi | 187ms |
+| 238s | 0 (Failed) | 20,650 Mi | 36ms |
+
+### Analysis
+
+With sum(memory.min) at 90.6% of allocatable, the node remained stable throughout both steady state and extreme memory pressure. The BestEffort aggressor consumed ~20 GiB before the kernel OOM killed it. The aggressor had no memory.min or memory.low protection, so the kernel correctly targeted it. All protected pods (Guaranteed with memory.min, Burstable with memory.low) and even the unprotected BestEffort holder (which was idle at 512Mi) survived.
+
+kubelet API latency stayed under 50ms until MemAvailable dropped below 2 GiB, spiking to 502ms when MemAvailable hit its 1,118 Mi minimum but still responsive. MemAvailable recovered to ~20 GiB within seconds of the aggressor termination. The MemoryPressure node condition was never triggered because the kubelet eviction thresholds were not breached (the OOM kill was a kernel level action, not a kubelet eviction).
+
+Deploy script: [`scripts/deploy-capacity-pressure.sh`](scripts/deploy-capacity-pressure.sh). Monitor script: [`scripts/monitor-capacity-pressure.sh`](scripts/monitor-capacity-pressure.sh).
+
+Raw data: [`data/capacity-pressure-steady.csv`](data/capacity-pressure-steady.csv), [`data/capacity-pressure-test.csv`](data/capacity-pressure-test.csv)
 
 ---
 
@@ -331,7 +533,10 @@ Raw data: [`data/guaranteed-pageio-run3-no-memqos.txt`](data/guaranteed-pageio-r
 | Rollback: InPlacePodResize | Not tested | Clears stale memory.high to max | **New** — non-disruptive remediation confirmed |
 | Multi-pod pressure (Run A, 14G) | Not tested | Aggressor throttled at memory.high, all pods survived | **New** — validates memory.high throttling under pressure |
 | Multi-pod pressure (Run B, 8G) | Not tested | Aggressor throttled at memory.high, all pods survived | **New** — confirms throttle behavior with smaller limit and abundant node headroom |
-| Guaranteed pod page cache (#137880) | Not tested | OOM-killed with TieredReservation; survived with None and MemoryQoS off | **New** — memory.min=memory.max blocks intra-cgroup page cache reclaim |
+| Guaranteed pod page cache (#137880) | Not tested | OOM-killed with TieredReservation; survived with None, MemoryQoS off, and Burstable | **New** — memory.min=memory.max blocks intra-cgroup page cache reclaim; memory.low does not |
+| Soft policy page cache (#137880) | Not tested | Guaranteed and mixed Guaranteed+Burstable workloads survived with memory.low=512Mi | **New** — Soft keeps page cache reclaimable while preserving soft request protection |
+| Soft policy under node pressure | Not tested | Guaranteed survived; Burstable OOM-killed after global OOM | **New** — memory.low does not equalize global OOM victim selection across QoS classes |
+| Node stability (sum(memory.min) near capacity) | Not tested | Node stable with 28Gi memory.min (90.6% of allocatable); aggressor OOM killed, all protected pods survived | **New** — validates node stability under sustained memory pressure with memory.min near capacity |
 
 ---
 
